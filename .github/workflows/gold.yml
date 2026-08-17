@@ -56,7 +56,9 @@ jobs:
       - name: Commit if changed
         run: |
           rm -f raw.html
-          if git diff --quiet -- docs/gold.json; then
+          # --porcelain rather than `git diff`, because on the very first run
+          # the file is untracked and `git diff` reports nothing to do.
+          if [ -z "$(git status --porcelain -- docs/gold.json)" ]; then
             echo "no change"
             exit 0
           fi
