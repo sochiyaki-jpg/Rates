@@ -36,14 +36,22 @@ jobs:
           KEEP_RAW: ${{ inputs.keep_raw && '1' || '0' }}
         run: python scripts/fetch_gold.py
 
-      - name: Upload the page for inspection
+      - name: Publish the page for inspection
+        # Committed to a throwaway branch rather than uploaded as an artifact,
+        # because an artifact can only be read through a storage host that is
+        # not always reachable. This branch is never merged and is overwritten
+        # on every debug run.
         if: always() && inputs.keep_raw
-        uses: actions/upload-artifact@v4
-        with:
-          name: raw-page
-          path: raw.html
-          if-no-files-found: ignore
-          retention-days: 3
+        run: |
+          test -f raw.html || exit 0
+          git config user.name "rates-bot"
+          git config user.email "rates-bot@users.noreply.github.com"
+          git checkout --orphan debug-raw
+          git rm -rq --cached . || true
+          git add -f raw.html
+          git commit -m "raw page $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f origin debug-raw
+          git checkout -f "$GITHUB_SHA"
 
       - name: Commit if changed
         run: |
