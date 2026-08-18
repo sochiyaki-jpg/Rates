@@ -41,7 +41,7 @@ UA = ("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
 # purity -> the fraction of the 999 figure it should sit at
 PURITY = {
     "999": 1.000,
-    "995": 0.995,
+    "995": 0.996,   # IBJA computes 995 at 0.996 of 999, not 0.995
     "916": 0.916,
     "750": 0.750,
     "585": 0.585,
@@ -131,55 +131,53 @@ def read_today(html: str):
     """(date, session, rates) from the current day's table, or (None, None, {}).
 
     The Previous Dates tables are named literally: a day appears there only
-    once it has closed, so reading them alone leaves the feed permanently a
-    day behind. Today's figures sit in their own table, which is empty and
-    carries a "rates will be uploaded soon" note until IBJA publishes.
+    once it has closed, so reading them alone leaves the feed permanently one
+    publication behind. Today's figures sit in their own table.
 
-    That table is laid out the other way round -- a row per purity, with an AM
-    and a PM column -- so it is read on its own terms rather than forced
-    through the same parser. Everything it produces still goes through the
-    same gates afterwards, and anything it cannot supply falls back to the
-    previous-dates tables, so a change to this markup costs a day rather than
-    a wrong number.
+    That table's id carries its own state -- TodayRatesTableDataNo before
+    IBJA publishes, TodayRatesTableDataYes after -- so the element being
+    looked for is not the element that appears once there is something to
+    read. Both are accepted here. Its cells are ASP label spans rather than
+    data-label attributes, so it is read by label id, one per purity per
+    session.
+
+    Everything this returns still goes through the same gates, and anything
+    it cannot supply falls back to the closed days, so a further change to
+    this markup costs a day rather than a wrong number.
     """
-    block = pane(html, "TodayRatesTableDataNo")
-    if not block or "uploaded soon" in block.lower():
+    block = ""
+    for ident in ("TodayRatesTableDataYes", "TodayRatesTableDataNo"):
+        b = pane(html, ident)
+        if b:
+            block = b
+            break
+    if not block:
         return None, None, {}
 
-    am, pm = {}, {}
-    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", block, re.S | re.I):
-        cells = [re.sub(r"<[^>]+>", "", c).strip()
-                 for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S | re.I)]
-        if len(cells) < 3:
-            continue
-        name = cells[0].lower().replace(" ", "")
-        key = None
-        for p in PURITY:
-            if name.startswith("gold") and p in name:
-                key = p
-        if "silver" in name and "999" in name:
-            key = "silver999"
-        if "platinum" in name and "999" in name:
-            key = "platinum999"
-        if not key:
-            continue
-        a, p_ = number(cells[1]), number(cells[2])
-        if a and a > 0:
-            am[key] = a
-        if p_ and p_ > 0:
-            pm[key] = p_
+    def cell(purity: str, sess: str):
+        m = re.search(
+            r'id\s*=\s*["\']lbl%s_%s["\'][^>]*>([^<]*)<' % (purity, sess),
+            block, re.I)
+        return number(m.group(1)) if m else None
 
-    date = None
-    m = re.search(r"(\d{2}/\d{2}/\d{4})", block)
-    if m:
-        date = m.group(1)
-    if not date:
+    for sess in ("PM", "AM"):
+        rates = {}
+        for p in PURITY:
+            v = cell("Gold" + p, sess)
+            if v is None or v <= 0:
+                rates = {}
+                break
+            rates[p] = v
+        if not rates:
+            continue
+        for key, label in (("silver999", "Silver999"), ("platinum999", "Platinum999")):
+            v = cell(label, sess)
+            if v and v > 0:
+                rates[key] = v
         # The page is written for an Indian audience in IST; the runner is UTC.
         date = time.strftime("%d/%m/%Y", time.gmtime(time.time() + 19800))
+        return date, sess, rates
 
-    for sess, got in (("PM", pm), ("AM", am)):
-        if all(p in got for p in PURITY):
-            return date, sess, got
     return None, None, {}
 
 
