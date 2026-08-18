@@ -117,11 +117,81 @@ def read_session(html: str, tab_id: str):
     return None, {}
 
 
+def as_date(s):
+    """dd/mm/yyyy to a sortable tuple. Comparing these as strings almost works
+    and then quietly stops: "01/09/2026" sorts below "30/08/2026"."""
+    try:
+        d, m, y = (int(x) for x in s.split("/"))
+        return (y, m, d)
+    except Exception:
+        return (0, 0, 0)
+
+
+def read_today(html: str):
+    """(date, session, rates) from the current day's table, or (None, None, {}).
+
+    The Previous Dates tables are named literally: a day appears there only
+    once it has closed, so reading them alone leaves the feed permanently a
+    day behind. Today's figures sit in their own table, which is empty and
+    carries a "rates will be uploaded soon" note until IBJA publishes.
+
+    That table is laid out the other way round -- a row per purity, with an AM
+    and a PM column -- so it is read on its own terms rather than forced
+    through the same parser. Everything it produces still goes through the
+    same gates afterwards, and anything it cannot supply falls back to the
+    previous-dates tables, so a change to this markup costs a day rather than
+    a wrong number.
+    """
+    block = pane(html, "TodayRatesTableDataNo")
+    if not block or "uploaded soon" in block.lower():
+        return None, None, {}
+
+    am, pm = {}, {}
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", block, re.S | re.I):
+        cells = [re.sub(r"<[^>]+>", "", c).strip()
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S | re.I)]
+        if len(cells) < 3:
+            continue
+        name = cells[0].lower().replace(" ", "")
+        key = None
+        for p in PURITY:
+            if name.startswith("gold") and p in name:
+                key = p
+        if "silver" in name and "999" in name:
+            key = "silver999"
+        if "platinum" in name and "999" in name:
+            key = "platinum999"
+        if not key:
+            continue
+        a, p_ = number(cells[1]), number(cells[2])
+        if a and a > 0:
+            am[key] = a
+        if p_ and p_ > 0:
+            pm[key] = p_
+
+    date = None
+    m = re.search(r"(\d{2}/\d{2}/\d{4})", block)
+    if m:
+        date = m.group(1)
+    if not date:
+        # The page is written for an Indian audience in IST; the runner is UTC.
+        date = time.strftime("%d/%m/%Y", time.gmtime(time.time() + 19800))
+
+    for sess, got in (("PM", pm), ("AM", am)):
+        if all(p in got for p in PURITY):
+            return date, sess, got
+    return None, None, {}
+
+
 def pick_session(html: str):
-    """PM if it is published for the same day as AM or later, else AM."""
+    """Today's figures if they are published, else the newest closed day."""
+    t_date, t_sess, t_rates = read_today(html)
+    if t_rates:
+        return t_sess, t_date, t_rates
+
     am_date, am = read_session(html, "tab-am")
     pm_date, pm = read_session(html, "tab-pm")
-    if pm and (not am or pm_date >= am_date):
+    if pm and (not am or as_date(pm_date) >= as_date(am_date)):
         return "PM", pm_date, pm
     if am:
         return "AM", am_date, am

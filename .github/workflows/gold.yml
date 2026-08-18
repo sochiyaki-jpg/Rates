@@ -36,11 +36,32 @@ jobs:
           KEEP_RAW: ${{ inputs.keep_raw && '1' || '0' }}
         run: python scripts/fetch_gold.py
 
+      - name: Commit if changed
+        run: |
+          # --porcelain rather than `git diff`, because on the very first run
+          # the file is untracked and `git diff` reports nothing to do.
+          if [ -z "$(git status --porcelain -- docs/gold.json)" ]; then
+            echo "no change"
+            exit 0
+          fi
+          git config user.name "rates-bot"
+          git config user.email "rates-bot@users.noreply.github.com"
+          git add docs/gold.json
+          git commit -m "gold: $(date -u +%Y-%m-%dT%H:%MZ)"
+          # The scheduled run and a manual run can land together; rebase
+          # rather than fail, since both are writing the same one file.
+          git pull --rebase --quiet
+          git push
+
       - name: Publish the page for inspection
         # Committed to a throwaway branch rather than uploaded as an artifact,
         # because an artifact can only be read through a storage host that is
         # not always reachable. This branch is never merged and is overwritten
         # on every debug run.
+        # Runs last, and deliberately so. It ends by checking the tree back
+        # out, which discards anything written but not yet committed -- when
+        # it ran first it quietly threw away the very rates.json the run had
+        # just produced, and the run still reported success.
         if: always() && inputs.keep_raw
         run: |
           test -f raw.html || exit 0
@@ -52,18 +73,3 @@ jobs:
           git commit -m "raw page $(date -u +%Y-%m-%dT%H:%MZ)"
           git push -f origin debug-raw
           git checkout -f "$GITHUB_SHA"
-
-      - name: Commit if changed
-        run: |
-          rm -f raw.html
-          # --porcelain rather than `git diff`, because on the very first run
-          # the file is untracked and `git diff` reports nothing to do.
-          if [ -z "$(git status --porcelain -- docs/gold.json)" ]; then
-            echo "no change"
-            exit 0
-          fi
-          git config user.name "rates-bot"
-          git config user.email "rates-bot@users.noreply.github.com"
-          git add docs/gold.json
-          git commit -m "gold: $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push
