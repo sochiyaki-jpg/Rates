@@ -3,9 +3,11 @@ name: Publish gold rates
 on:
   schedule:
     # IBJA publishes at about 12:10 and 18:10 IST. Run a little after each.
-    # 07:15 UTC = 12:45 IST, 13:15 UTC = 18:45 IST. Weekdays only.
-    - cron: "15 7 * * 1-5"
-    - cron: "15 13 * * 1-5"
+    # 07:15 UTC = 12:45 IST, 13:15 UTC = 18:45 IST.
+    # Monday to Saturday: IBJA has a Saturday session, and a weekday-only
+    # schedule left it unread until the following Monday.
+    - cron: "15 7 * * 1-6"
+    - cron: "15 13 * * 1-6"
   workflow_dispatch:
     inputs:
       keep_raw:
@@ -34,22 +36,28 @@ jobs:
         id: run
         env:
           KEEP_RAW: ${{ inputs.keep_raw && '1' || '0' }}
+          # The key lives here and nowhere else. It never enters the app, the
+          # published JSON, or a log line: the script describes an API failure
+          # by its HTTP status rather than by echoing the URL it called.
+          METALS_DEV_KEY: ${{ secrets.METALS_DEV_KEY }}
         run: python scripts/fetch_gold.py
 
       - name: Commit if changed
         run: |
           # --porcelain rather than `git diff`, because on the very first run
-          # the file is untracked and `git diff` reports nothing to do.
-          if [ -z "$(git status --porcelain -- docs/gold.json)" ]; then
+          # a file is untracked and `git diff` reports nothing to do.
+          # quota.json is included: the call counter is only a ceiling if it
+          # survives to the next run, and the repository is where it lives.
+          if [ -z "$(git status --porcelain -- docs/gold.json docs/gold_scrape.json docs/quota.json)" ]; then
             echo "no change"
             exit 0
           fi
           git config user.name "rates-bot"
           git config user.email "rates-bot@users.noreply.github.com"
-          git add docs/gold.json
+          git add docs/gold.json docs/gold_scrape.json docs/quota.json
           git commit -m "gold: $(date -u +%Y-%m-%dT%H:%MZ)"
           # The scheduled run and a manual run can land together; rebase
-          # rather than fail, since both are writing the same one file.
+          # rather than fail, since both are writing the same few files.
           git pull --rebase --quiet
           git push
 
@@ -60,7 +68,7 @@ jobs:
         # on every debug run.
         # Runs last, and deliberately so. It ends by checking the tree back
         # out, which discards anything written but not yet committed -- when
-        # it ran first it quietly threw away the very rates.json the run had
+        # it ran first it quietly threw away the very gold.json the run had
         # just produced, and the run still reported success.
         if: always() && inputs.keep_raw
         run: |
