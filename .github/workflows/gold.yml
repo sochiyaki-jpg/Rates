@@ -27,6 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Without this the checkout is detached at a SHA, and a detached
+          # HEAD cannot be pushed: the commit is made and then thrown away,
+          # which is exactly how a run can report a rate it never published.
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
@@ -58,8 +63,10 @@ jobs:
           git commit -m "gold: $(date -u +%Y-%m-%dT%H:%MZ)"
           # The scheduled run and a manual run can land together; rebase
           # rather than fail, since both are writing the same few files.
-          git pull --rebase --quiet
-          git push
+          # Branch named explicitly on both, so neither depends on the
+          # checkout having left an upstream configured.
+          git pull --rebase --quiet origin main
+          git push origin HEAD:main
 
       - name: Publish the page for inspection
         # Committed to a throwaway branch rather than uploaded as an artifact,
