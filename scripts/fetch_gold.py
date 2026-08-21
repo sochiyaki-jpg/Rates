@@ -375,7 +375,7 @@ def find_number(obj, *names):
     return None
 
 
-def api_rates(key, quota):
+def api_rates(key, quota, raw=None):
     """Gold and silver from metals.dev as a rates dict, or None.
 
     The quota counter moves before the request is sent. A call that times out
@@ -409,6 +409,12 @@ def api_rates(key, quota):
         if status not in ("success", "ok"):
             raise Refused("metals.dev status %s" % status)
 
+        # The same response carries the currency table. Stash it before
+        # anything can raise: the gold figures are what this function is for,
+        # and a currency read must never be the reason gold fails.
+        if raw is not None:
+            raw["data"] = data
+
         gold_g = find_number(data, "ibja_gold")
         silver_g = find_number(data, "ibja_silver")
         if not gold_g or gold_g <= 0:
@@ -421,6 +427,120 @@ def api_rates(key, quota):
         return rates
 
     return retry("metals.dev", API_TRIES, once, on_attempt=spend)
+
+
+# ------------------------------------------------------------------ currency
+#
+# The /latest call already made for gold carries a table of currency rates in
+# the same response. Reading it costs nothing: no second request, no second
+# key, no movement on the quota meter. What follows turns that table into the
+# same shape the app already expects from its old feed -- rupees for one unit
+# of each currency -- and refuses it on the same principle the gold gates use,
+# which is that a figure that cannot be checked does not get published.
+#
+# The response layout is not assumed. metals.dev may nest the table under
+# "currencies", may name it something else, and may express it either as
+# rupees per unit or units per rupee depending on how the base is applied.
+# All three are worked out from the data rather than hard-coded, because a
+# parser pinned to one shape is a parser that breaks silently on the day the
+# shape changes.
+
+FX_OUT = os.path.join(DOCS, "fx.json")
+
+# A currency table has to look like one before it is treated as one.
+FX_MIN_CODES = 20
+# USD is the anchor for working out which way round the table is. No currency
+# worth quoting sits near one rupee, and the dollar least of all, so its
+# magnitude alone says whether the numbers are rupees per unit or the inverse.
+FX_USD_FLOOR, FX_USD_CEIL = 40.0, 250.0
+FX_MOVE_TOL = 0.10      # 10% on the dollar against the last published table
+
+
+def looks_like_code(s):
+    return isinstance(s, str) and len(s) == 3 and s.isalpha() and s.isupper()
+
+
+def find_currency_table(obj):
+    """The largest dict in the response that reads as code -> number.
+
+    Walks the whole payload rather than looking in a named place. The metals
+    block would fail the test -- its keys are names like gold and silver, not
+    three-letter codes -- so the currency table is found by its shape.
+    """
+    best = None
+    stack = [obj]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            codes = {k: v for k, v in node.items()
+                     if looks_like_code(k) and isinstance(v, (int, float))
+                     and not isinstance(v, bool) and v > 0}
+            if len(codes) >= FX_MIN_CODES and (best is None or len(codes) > len(best)):
+                best = codes
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return best
+
+
+def normalise_fx(codes):
+    """Rupees for one unit of each currency, whichever way the table came.
+
+    Returns None when the dollar is missing or lands outside a band no real
+    dollar has ever been in, since without a trustworthy anchor there is no
+    way to tell an inverted table from a mispriced one.
+    """
+    usd = codes.get("USD")
+    if not usd or usd <= 0:
+        return None
+
+    if FX_USD_FLOOR <= usd <= FX_USD_CEIL:
+        out = dict(codes)                      # already rupees per unit
+    elif 0 < usd < 1:
+        inverted = 1.0 / usd
+        if not (FX_USD_FLOOR <= inverted <= FX_USD_CEIL):
+            return None
+        out = {k: (1.0 / v) for k, v in codes.items() if v > 0}
+    else:
+        return None
+
+    # The rupee against itself is one by definition. A feed that says
+    # otherwise has been rebased somewhere in transit and cannot be trusted
+    # for the rest of the table either.
+    inr = out.get("INR")
+    if inr and abs(inr - 1.0) > 0.01:
+        return None
+    out["INR"] = 1.0
+    return {k: v for k, v in out.items() if v > 0}
+
+
+def validate_fx(rates, prev):
+    if not rates or len(rates) < FX_MIN_CODES:
+        raise Refused("currency table has %d usable codes, wanted %d"
+                      % (len(rates or {}), FX_MIN_CODES))
+    usd = rates.get("USD")
+    if not usd or not (FX_USD_FLOOR <= usd <= FX_USD_CEIL):
+        raise Refused("dollar at %s is outside the sane band %s-%s"
+                      % (usd, FX_USD_FLOOR, FX_USD_CEIL))
+    if prev:
+        old = prev.get("rates", {}).get("USD")
+        if old and abs(usd - old) / old > FX_MOVE_TOL:
+            raise Refused("dollar moved from %s to %s, more than %d%%"
+                          % (old, usd, int(FX_MOVE_TOL * 100)))
+
+
+def fx_payload(rates, date, sess):
+    return {
+        "schema": 1,
+        "source": "metals.dev",
+        "base": "INR",
+        "rate_date": date,
+        "session": sess,
+        "published": published_stamp(date, sess),
+        "fetched": int(time.time()),
+        "note": "rupees for one unit of each currency",
+        "rates": {k: round(v, 6) for k, v in sorted(rates.items())},
+    }
 
 
 # ----------------------------------------------------------------- the gates
@@ -491,6 +611,48 @@ def write(path, prev, new, label):
              json.dumps(new["rates"])))
 
 
+def publish_fx(data, date, sess):
+    """Write fx.json from the gold response, or explain why not.
+
+    Every exit that is not a written file is a warning rather than a raised
+    error. The currency table is a passenger on the gold call: useful, and
+    never worth failing a gold run for.
+    """
+    if not data:
+        warn("no API response to read currencies from")
+        return
+
+    table = find_currency_table(data)
+    if not table:
+        warn("no currency table in the API response")
+        return
+
+    rates = normalise_fx(table)
+    if not rates:
+        warn("currency table could not be read as rupees per unit")
+        return
+
+    prev_fx = load(FX_OUT)
+    try:
+        validate_fx(rates, prev_fx)
+    except Refused as e:
+        warn("currency table refused: %s" % e)
+        return
+
+    new = fx_payload(rates, date, sess)
+    if prev_fx and all(prev_fx.get(k) == new.get(k)
+                       for k in ("rates", "session", "rate_date")):
+        print("fx.json unchanged")
+        return
+
+    os.makedirs(os.path.dirname(FX_OUT), exist_ok=True)
+    with open(FX_OUT, "w") as f:
+        json.dump(new, f, indent=2, sort_keys=True)
+        f.write("\n")
+    print("fx.json wrote %s %s with %d currencies, dollar at %s"
+          % (new["rate_date"], new["session"], len(rates), rates["USD"]))
+
+
 # ----------------------------------------------------------------------- main
 
 def main():
@@ -513,7 +675,8 @@ def main():
             warn("scrape refused: %s" % e)
             got = None
 
-    api = api_rates(key, quota)
+    api_raw = {}
+    api = api_rates(key, quota, raw=api_raw)
     quota_write(quota)
 
     chosen = None
@@ -565,6 +728,14 @@ def main():
         return
 
     write(OUT, prev, chosen, "gold.json")
+
+    # Currencies last, and in a box of their own. Gold is already on disk by
+    # here; a currency table that is missing, misshapen or unbelievable leaves
+    # that untouched and costs the run nothing but a warning.
+    try:
+        publish_fx(api_raw.get("data"), chosen["rate_date"], chosen["session"])
+    except Exception as e:
+        warn("currency table not published: %s" % e)
 
 
 if __name__ == "__main__":
