@@ -53,13 +53,18 @@ jobs:
           # a file is untracked and `git diff` reports nothing to do.
           # quota.json is included: the call counter is only a ceiling if it
           # survives to the next run, and the repository is where it lives.
-          if [ -z "$(git status --porcelain -- docs/gold.json docs/gold_scrape.json docs/quota.json)" ]; then
+          if [ -z "$(git status --porcelain -- docs/gold.json docs/gold_scrape.json docs/quota.json docs/fx.json docs/fx_shape.json)" ]; then
             echo "no change"
             exit 0
           fi
           git config user.name "rates-bot"
           git config user.email "rates-bot@users.noreply.github.com"
           git add docs/gold.json docs/gold_scrape.json docs/quota.json
+          # The currency table rides on the same response and is published
+          # from the same run. Left out of this list it was written and then
+          # thrown away with the working tree, which looks exactly like an
+          # API that never returned one.
+          git add docs/fx.json docs/fx_shape.json 2>/dev/null || true
           git commit -m "gold: $(date -u +%Y-%m-%dT%H:%MZ)"
           # The scheduled run and a manual run can land together; rebase
           # rather than fail, since both are writing the same few files.
