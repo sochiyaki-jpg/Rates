@@ -446,6 +446,7 @@ def api_rates(key, quota, raw=None):
 # shape changes.
 
 FX_OUT = os.path.join(DOCS, "fx.json")
+FX_SHAPE = os.path.join(DOCS, "fx_shape.json")
 
 # A currency table has to look like one before it is treated as one.
 FX_MIN_CODES = 20
@@ -611,6 +612,41 @@ def write(path, prev, new, label):
              json.dumps(new["rates"])))
 
 
+def describe(obj, depth=0):
+    """The shape of a payload, never its contents beyond a sample of keys.
+
+    Written when the currency table cannot be found, so that the next run
+    explains itself instead of leaving a silent absence to guess at.
+    """
+    if isinstance(obj, dict):
+        keys = list(obj.keys())
+        out = {"type": "dict", "count": len(keys), "keys": keys[:40]}
+        if depth < 2:
+            out["children"] = {k: describe(v, depth + 1) for k, v in
+                               list(obj.items())[:12]}
+        return out
+    if isinstance(obj, list):
+        return {"type": "list", "count": len(obj),
+                "first": describe(obj[0], depth + 1) if obj and depth < 2 else None}
+    if isinstance(obj, bool):
+        return {"type": "bool"}
+    if isinstance(obj, (int, float)):
+        return {"type": "number", "sample": obj}
+    return {"type": type(obj).__name__}
+
+
+def write_shape(data, why):
+    try:
+        os.makedirs(os.path.dirname(FX_SHAPE), exist_ok=True)
+        with open(FX_SHAPE, "w") as f:
+            json.dump({"why": why, "at": int(time.time()),
+                       "shape": describe(data)}, f, indent=2, sort_keys=True)
+            f.write("\n")
+        print("fx_shape.json written: %s" % why)
+    except Exception as e:
+        warn("could not write fx_shape.json: %s" % e)
+
+
 def publish_fx(data, date, sess):
     """Write fx.json from the gold response, or explain why not.
 
@@ -625,11 +661,16 @@ def publish_fx(data, date, sess):
     table = find_currency_table(data)
     if not table:
         warn("no currency table in the API response")
+        write_shape(data, "no dict of 3-letter codes with at least %d entries"
+                    % FX_MIN_CODES)
         return
 
     rates = normalise_fx(table)
     if not rates:
         warn("currency table could not be read as rupees per unit")
+        write_shape({"found_codes": len(table),
+                     "sample": dict(list(table.items())[:12])},
+                    "table found but the dollar anchor did not make sense")
         return
 
     prev_fx = load(FX_OUT)
