@@ -648,50 +648,59 @@ def write_shape(data, why):
 
 
 def publish_fx(data, date, sess):
-    """Write fx.json from the gold response, or explain why not.
+    """Write fx.json from the gold response, and always say what happened.
 
-    Every exit that is not a written file is a warning rather than a raised
-    error. The currency table is a passenger on the gold call: useful, and
-    never worth failing a gold run for.
+    Every exit records itself in fx_shape.json. A currency table that cannot
+    be read is not an error worth failing a gold run for, but it is always
+    worth being able to see the reason for without reading a build log.
     """
+    def report(why, extra=None):
+        try:
+            body = {"why": why, "at": int(time.time())}
+            if extra:
+                body.update(extra)
+            os.makedirs(os.path.dirname(FX_SHAPE), exist_ok=True)
+            with open(FX_SHAPE, "w") as f:
+                json.dump(body, f, indent=2, sort_keys=True)
+                f.write("\n")
+            print("fx_shape.json: %s" % why)
+        except Exception as e:
+            warn("could not write fx_shape.json: %s" % e)
+
     if not data:
-        warn("no API response to read currencies from")
+        report("no API response was captured this run")
         return
 
     table = find_currency_table(data)
     if not table:
-        warn("no currency table in the API response")
-        write_shape(data, "no dict of 3-letter codes with at least %d entries"
-                    % FX_MIN_CODES)
+        report("no dict of at least %d three-letter codes in the response"
+               % FX_MIN_CODES, {"shape": describe(data)})
         return
 
     rates = normalise_fx(table)
     if not rates:
-        warn("currency table could not be read as rupees per unit")
-        write_shape({"found_codes": len(table),
-                     "sample": dict(list(table.items())[:12])},
-                    "table found but the dollar anchor did not make sense")
+        report("table found but could not be read as rupees per unit",
+               {"found": len(table),
+                "sample": dict(list(table.items())[:12])})
         return
 
     prev_fx = load(FX_OUT)
     try:
         validate_fx(rates, prev_fx)
     except Refused as e:
-        warn("currency table refused: %s" % e)
+        report("refused: %s" % e, {"found": len(rates),
+                                   "usd": rates.get("USD")})
         return
 
     new = fx_payload(rates, date, sess)
-    if prev_fx and all(prev_fx.get(k) == new.get(k)
-                       for k in ("rates", "session", "rate_date")):
-        print("fx.json unchanged")
-        return
-
     os.makedirs(os.path.dirname(FX_OUT), exist_ok=True)
     with open(FX_OUT, "w") as f:
         json.dump(new, f, indent=2, sort_keys=True)
         f.write("\n")
-    print("fx.json wrote %s %s with %d currencies, dollar at %s"
-          % (new["rate_date"], new["session"], len(rates), rates["USD"]))
+    report("published %d currencies, dollar at %.4f"
+           % (len(rates), rates["USD"]))
+    print("fx.json wrote %s %s with %d currencies"
+          % (new["rate_date"], new["session"], len(rates)))
 
 
 # ----------------------------------------------------------------------- main
