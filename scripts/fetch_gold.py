@@ -175,6 +175,25 @@ def published_stamp(date, sess):
         return int(time.time())
 
 
+def session_is_sane(date, sess):
+    """False if this (date, session) could not really be true right now.
+
+    A scraped date/session label is not proof by itself. IBJA publishes
+    Monday to Friday only, and a session's publish time cannot be in the
+    future relative to the moment we are looking at it. Either failure
+    means the label was misread off the page or is a stale placeholder,
+    not a real publication -- the caller should fall back to clock_session()
+    rather than trust it.
+    """
+    try:
+        d, mo, y = (int(x) for x in date.split("/"))
+    except Exception:
+        return False
+    if calendar.weekday(y, mo, d) >= 5:        # Saturday or Sunday
+        return False
+    return published_stamp(date, sess) <= int(time.time())
+
+
 # --------------------------------------------------------------------- quota
 
 def quota_read():
@@ -717,6 +736,10 @@ def main():
     scrape_payload = None
     if got:
         s_sess, s_date, s_rates = got
+        if not session_is_sane(s_date, s_sess):
+            warn("scraped label %s %s cannot be real yet -- correcting to clock"
+                 % (s_date, s_sess))
+            s_date, s_sess = clock_session()
         try:
             validate(s_rates, prev_scrape)
             scrape_payload = payload("IBJA-scrape", s_sess, s_date, s_rates)
