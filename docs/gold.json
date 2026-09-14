@@ -1,6 +1,6 @@
 {
   "currency": "INR",
-  "fetched": 1789370871,
+  "fetched": 1789392098,
   "gold_unit": "10g",
   "platinum_unit": "10g",
   "published": 1789130400,
@@ -12,7 +12,7 @@
     "995": 151332.47,
     "999": 151940.23,
     "platinum999": 63561.0,
-    "silver999": 228916.0
+    "silver999": 228923.6
   },
   "schema": 1,
   "session": "PM",
