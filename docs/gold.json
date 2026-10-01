@@ -1,21 +1,21 @@
 {
   "currency": "INR",
-  "fetched": 1790774439,
+  "fetched": 1790839236,
   "gold_unit": "10g",
   "platinum_unit": "10g",
-  "published": 1790772000,
-  "rate_date": "30/09/2026",
+  "published": 1790836800,
+  "rate_date": "01/10/2026",
   "rates": {
-    "585": 86515.0,
-    "750": 110916.0,
-    "916": 135465.0,
-    "995": 147296.0,
-    "999": 147888.0,
-    "platinum999": 58192.0,
-    "silver999": 220435.0
+    "585": 86983.76,
+    "750": 111517.64,
+    "916": 136200.21,
+    "995": 148095.42,
+    "999": 148690.18,
+    "platinum999": 59024.0,
+    "silver999": 221956.5
   },
   "schema": 1,
-  "session": "PM",
+  "session": "AM",
   "silver_unit": "kg",
-  "source": "IBJA-scrape"
+  "source": "metals.dev"
 }
